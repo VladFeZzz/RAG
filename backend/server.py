@@ -27,7 +27,6 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 chroma_client = chromadb.PersistentClient(path="./my_base")
 collection = chroma_client.get_or_create_collection(name="Curse_docs")
 
-
 @app.route('/', methods=['GET'])
 def serve_frontend():
     return send_from_directory(app.static_folder, "index.html")
