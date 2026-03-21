@@ -4,6 +4,7 @@ const chatBox = document.getElementById("chatBox");
 const userInput = document.getElementById("userInput");
 const fileInput = document.getElementById("pdfInput");
 const fileNameSpan = document.getElementById("fileName");
+let messageCounter = 0;
 
 fileInput.addEventListener("change", function () {
   if (this.files && this.files.length > 0) {
@@ -31,8 +32,21 @@ async function sendMessage() {
 
     removeMessage(loadingId);
 
+    if (!response.ok) {
+      appendMessage(
+        data.response || "Сталася помилка на сервері. Спробуй ще раз.",
+        "bot",
+      );
+      return;
+    }
+
     if (data.response) {
       appendMessage(data.response, "bot");
+    } else {
+      appendMessage(
+        "Я не отримав відповідь від сервера. Спробуй ще раз.",
+        "bot",
+      );
     }
   } catch (error) {
     console.error("Error:", error);
@@ -83,7 +97,7 @@ function appendMessage(text, sender, isLoading = false) {
   const msgDiv = document.createElement("div");
   msgDiv.classList.add("message", sender);
 
-  const msgId = "msg-" + Date.now();
+  const msgId = `msg-${Date.now()}-${messageCounter++}`;
   msgDiv.id = msgId;
 
   const bubble = document.createElement("div");
