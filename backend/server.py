@@ -7,6 +7,8 @@ from groq import Groq
 from dotenv import load_dotenv
 import pypdf
 
+RELEVANCE_DISTANCE_THRESHOLD = 200.0
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "frontend"))
 
@@ -28,6 +30,29 @@ chroma_client = chromadb.PersistentClient(path="./my_base")
 collection = chroma_client.get_or_create_collection(name="Curse_docs")
 
 
+def clean_bot_response(text: str) -> str:
+    if not text:
+        return ""
+
+    cleaned_lines = []
+    for line in text.splitlines():
+        lowered = line.strip().lower()
+        if lowered.startswith("context") or lowered.startswith("контекст"):
+            continue
+        cleaned_lines.append(line)
+
+    return "\n".join(cleaned_lines).strip()
+
+
+def has_keyword_overlap(question: str, context: str) -> bool:
+    tokens = [t.strip(".,!?()[]{}:;\"'`).").lower() for t in question.split()]
+    tokens = [t for t in tokens if len(t) >= 3]
+    if not tokens:
+        return False
+
+    context_lower = context.lower()
+    return any(token in context_lower for token in tokens)
+
 @app.route('/', methods=['GET'])
 def serve_frontend():
     return send_from_directory(app.static_folder, "index.html")
@@ -45,18 +70,31 @@ def chat():
     try:
         query_embed = ollama.embeddings(model="nomic-embed-text", prompt=user_question)['embedding']
         results = collection.query(query_embeddings=[query_embed], n_results=3)
-        
+
         context = ""
+        best_distance = None
         if results['documents'] and results['documents'][0]:
             top_docs = [doc for doc in results['documents'][0] if doc]
             context = "\n\n".join(top_docs)
+            distances = results.get('distances', [[]])[0]
+            if distances:
+                best_distance = min(distances)
             print(f"Found {len(top_docs)} context chunks")
+            if best_distance is not None:
+                print(f"Best distance: {best_distance:.4f}")
         else:
             print("No context found in database")
-            
+
     except Exception as e:
         print(f"Search error: {e}")
         context = ""
+        best_distance = None
+
+    weak_retrieval = best_distance is not None and best_distance > RELEVANCE_DISTANCE_THRESHOLD
+    if not context or (weak_retrieval and not has_keyword_overlap(user_question, context)):
+        return jsonify({
+            "response": "Не знайшов достатньо релевантної інформації у базі знань для цього питання. Спробуй перефразувати запит або додати PDF з потрібною темою."
+        })
 
     rag_hint = ""
     if "rag" in user_question.lower():
@@ -67,12 +105,13 @@ def chat():
 
     system_prompt = f"""
     You are a helpful music expert assistant. 
-    Answer the user's question based ONLY on the provided CONTEXT.
+    Answer the user's question based ONLY on the provided snippets.
     If the answer is not in the context, politely say that you don't have this information in your database.
     Respond in Ukrainian.
+    Never include technical labels like CONTEXT, snippets, source, or metadata in the final answer.
     {rag_hint}
 
-    CONTEXT: 
+    KNOWLEDGE SNIPPETS:
     {context}
     """
     
@@ -86,7 +125,7 @@ def chat():
             model="llama-3.3-70b-versatile",
             temperature=0.5,
         )
-        bot_response = completion.choices[0].message.content
+        bot_response = clean_bot_response(completion.choices[0].message.content)
         print("Response generated successfully")
         
         return jsonify({"response": bot_response})
