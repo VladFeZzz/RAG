@@ -1,4 +1,6 @@
 import os
+import re
+import time
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import chromadb
@@ -8,6 +10,8 @@ from dotenv import load_dotenv
 import pypdf
 
 RELEVANCE_DISTANCE_THRESHOLD = 200.0
+MAX_CHUNK_CHARS = 1400
+CHUNK_OVERLAP_CHARS = 200
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "frontend"))
@@ -28,6 +32,77 @@ else:
 groq_client = Groq(api_key=GROQ_API_KEY)
 chroma_client = chromadb.PersistentClient(path="./my_base")
 collection = chroma_client.get_or_create_collection(name="Curse_docs")
+
+
+def split_text_with_overlap(text: str, max_chars: int = MAX_CHUNK_CHARS, overlap: int = CHUNK_OVERLAP_CHARS):
+    cleaned = re.sub(r"\s+", " ", text or "").strip()
+    if not cleaned:
+        return []
+
+    chunks = []
+    start = 0
+    text_len = len(cleaned)
+
+    while start < text_len:
+        end = min(start + max_chars, text_len)
+
+        if end < text_len:
+            split_pos = cleaned.rfind(" ", start, end)
+            if split_pos > start + int(max_chars * 0.6):
+                end = split_pos
+
+        chunk = cleaned[start:end].strip()
+        if len(chunk) >= 30:
+            chunks.append(chunk)
+
+        if end >= text_len:
+            break
+
+        start = max(0, end - overlap)
+
+    return chunks
+
+
+def extract_pdf_text_with_ocr(pdf_bytes: bytes) -> str:
+    try:
+        from pdf2image import convert_from_bytes
+        from pdf2image.exceptions import PDFInfoNotInstalledError
+        import pytesseract
+        from pytesseract import TesseractNotFoundError
+    except ImportError as e:
+        raise RuntimeError(
+            "OCR dependencies are missing. Install pdf2image, pytesseract, pillow and make sure Tesseract OCR is installed on OS."
+        ) from e
+
+    tesseract_cmd = os.getenv("TESSERACT_CMD")
+    if tesseract_cmd:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+
+    try:
+        pages = convert_from_bytes(pdf_bytes, dpi=250)
+    except PDFInfoNotInstalledError as e:
+        raise RuntimeError(
+            "Poppler is not installed or not available in PATH. Install Poppler and restart the server."
+        ) from e
+    except Exception as e:
+        raise RuntimeError(f"Failed to render PDF pages for OCR: {e}") from e
+
+    page_texts = []
+    for page_num, image in enumerate(pages, start=1):
+        try:
+            # Always OCR to keep behavior consistent for scanned and mixed PDFs.
+            text = pytesseract.image_to_string(image, lang="ukr+eng")
+        except TesseractNotFoundError as e:
+            raise RuntimeError(
+                "Tesseract OCR is not installed or not available in PATH. Install Tesseract and restart the server."
+            ) from e
+        except Exception as e:
+            raise RuntimeError(f"OCR failed on page {page_num}: {e}") from e
+
+        if text and text.strip():
+            page_texts.append(text.strip())
+
+    return "\n\n".join(page_texts)
 
 
 def clean_bot_response(text: str) -> str:
@@ -145,32 +220,41 @@ def upload_file():
         return jsonify({"error": "Файл не вибрано"}), 400
 
     print(f"\nProcessing file: {file.filename}")
-    
+
     try:
-        pdf_reader = pypdf.PdfReader(file)
-        text_content = ""
-        
-        for page in pdf_reader.pages:
-            text_content += page.extract_text() + "\n\n"
-        
-        chunks = text_content.split('\n\n')
-        chunks = [chunk.strip() for chunk in chunks if len(chunk.strip()) > 20]
-        
+        pdf_bytes = file.read()
+        if not pdf_bytes:
+            return jsonify({"error": "Файл порожній або не вдалося прочитати вміст."}), 400
+
+        text_content = extract_pdf_text_with_ocr(pdf_bytes)
+        chunks = split_text_with_overlap(text_content)
+
+        if not chunks:
+            return jsonify({"error": "Не вдалося витягнути текст із PDF. Спробуйте інший файл або перевірте OCR налаштування."}), 400
+
         print(f"Text split into {len(chunks)} chunks. Starting indexing...")
-        
+
+        upload_stamp = int(time.time())
         for i, chunk in enumerate(chunks):
             embed = ollama.embeddings(model="nomic-embed-text", prompt=chunk)['embedding']
-            chunk_id = f"{file.filename}_chunk_{i}"
-            
+
+            chunk_id = f"{file.filename}_{upload_stamp}_chunk_{i}"
+
             collection.upsert(
                 ids=[chunk_id],
                 embeddings=[embed],
-                documents=[chunk]
+                documents=[chunk],
+                metadatas=[{
+                    "source_file": file.filename,
+                    "chunk_index": i,
+                    "ocr_used": True,
+                    "upload_stamp": upload_stamp,
+                }],
             )
-            
+
         print(f"File {file.filename} successfully added to knowledge base")
         return jsonify({"status": "success", "message": "Файл успішно оброблено та збережено!"})
-        
+
     except Exception as e:
         print(f"PDF processing error: {e}")
         return jsonify({"error": str(e)}), 500
