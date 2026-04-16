@@ -1,0 +1,10 @@
+flask
+flask-cors
+chromadb
+ollama
+groq
+python-dotenv
+pypdf
+pdf2image
+pytesseract
+pillow
