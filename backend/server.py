@@ -1,3 +1,4 @@
+import io
 import os
 import re
 import time
@@ -12,6 +13,9 @@ import pypdf
 RELEVANCE_DISTANCE_THRESHOLD = 200.0
 MAX_CHUNK_CHARS = 1400
 CHUNK_OVERLAP_CHARS = 200
+N_RESULTS = 8
+OCR_MIN_NATIVE_TEXT_CHARS = 800
+OCR_MIN_ALPHA_RATIO = 0.45
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "frontend"))
@@ -32,6 +36,13 @@ else:
 groq_client = Groq(api_key=GROQ_API_KEY)
 chroma_client = chromadb.PersistentClient(path="./my_base")
 collection = chroma_client.get_or_create_collection(name="Curse_docs")
+
+
+def alpha_ratio(text: str) -> float:
+    if not text:
+        return 0.0
+    letters = sum(ch.isalpha() for ch in text)
+    return letters / max(1, len(text))
 
 
 def split_text_with_overlap(text: str, max_chars: int = MAX_CHUNK_CHARS, overlap: int = CHUNK_OVERLAP_CHARS):
@@ -63,6 +74,19 @@ def split_text_with_overlap(text: str, max_chars: int = MAX_CHUNK_CHARS, overlap
     return chunks
 
 
+def extract_pdf_text_native(pdf_bytes: bytes) -> str:
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+        parts = []
+        for page in reader.pages:
+            text = page.extract_text() or ""
+            if text.strip():
+                parts.append(text.strip())
+        return "\n\n".join(parts)
+    except Exception:
+        return ""
+
+
 def extract_pdf_text_with_ocr(pdf_bytes: bytes) -> str:
     try:
         from pdf2image import convert_from_bytes
@@ -90,7 +114,6 @@ def extract_pdf_text_with_ocr(pdf_bytes: bytes) -> str:
     page_texts = []
     for page_num, image in enumerate(pages, start=1):
         try:
-            # Always OCR to keep behavior consistent for scanned and mixed PDFs.
             text = pytesseract.image_to_string(image, lang="ukr+eng")
         except TesseractNotFoundError as e:
             raise RuntimeError(
@@ -103,6 +126,17 @@ def extract_pdf_text_with_ocr(pdf_bytes: bytes) -> str:
             page_texts.append(text.strip())
 
     return "\n\n".join(page_texts)
+
+
+def extract_pdf_text_hybrid(pdf_bytes: bytes):
+    native_text = extract_pdf_text_native(pdf_bytes)
+    if len(native_text) >= OCR_MIN_NATIVE_TEXT_CHARS and alpha_ratio(native_text) >= OCR_MIN_ALPHA_RATIO:
+        return native_text, False
+
+    ocr_text = extract_pdf_text_with_ocr(pdf_bytes)
+    if len(ocr_text) > len(native_text):
+        return ocr_text, True
+    return native_text, False
 
 
 def clean_bot_response(text: str) -> str:
@@ -128,6 +162,25 @@ def has_keyword_overlap(question: str, context: str) -> bool:
     context_lower = context.lower()
     return any(token in context_lower for token in tokens)
 
+
+def rerank_by_keyword_overlap(question: str, docs: list[str], distances: list[float]):
+    q_tokens = [t.strip(".,!?()[]{}:;\"'`").lower() for t in question.split()]
+    q_tokens = [t for t in q_tokens if len(t) >= 3]
+
+    scored = []
+    for i, doc in enumerate(docs):
+        d = doc or ""
+        d_low = d.lower()
+        overlap = sum(1 for t in q_tokens if t in d_low)
+        dist = distances[i] if i < len(distances) else 10**9
+        scored.append((overlap, -dist, d, dist))
+
+    scored.sort(reverse=True)
+    ranked_docs = [x[2] for x in scored]
+    ranked_dists = [x[3] for x in scored]
+    return ranked_docs, ranked_dists
+
+
 @app.route('/', methods=['GET'])
 def serve_frontend():
     return send_from_directory(app.static_folder, "index.html")
@@ -144,17 +197,23 @@ def chat():
 
     try:
         query_embed = ollama.embeddings(model="nomic-embed-text", prompt=user_question)['embedding']
-        results = collection.query(query_embeddings=[query_embed], n_results=3)
+        results = collection.query(query_embeddings=[query_embed], n_results=N_RESULTS)
 
         context = ""
         best_distance = None
         if results['documents'] and results['documents'][0]:
-            top_docs = [doc for doc in results['documents'][0] if doc]
+            raw_docs = [doc for doc in results['documents'][0] if doc]
+            raw_dists = results.get('distances', [[]])[0] if results.get('distances') else []
+            top_docs, top_dists = rerank_by_keyword_overlap(user_question, raw_docs, raw_dists)
+
+            top_docs = top_docs[:3]
+            top_dists = top_dists[:3] if top_dists else []
+
             context = "\n\n".join(top_docs)
-            distances = results.get('distances', [[]])[0]
-            if distances:
-                best_distance = min(distances)
-            print(f"Found {len(top_docs)} context chunks")
+            if top_dists:
+                best_distance = min(top_dists)
+
+            print(f"Found {len(top_docs)} context chunks after rerank")
             if best_distance is not None:
                 print(f"Best distance: {best_distance:.4f}")
         else:
@@ -179,7 +238,7 @@ def chat():
         )
 
     system_prompt = f"""
-    You are a helpful music expert assistant. 
+    You are a helpful music expert assistant.
     Answer the user's question based ONLY on the provided snippets.
     If the answer is not in the context, politely say that you don't have this information in your database.
     Respond in Ukrainian.
@@ -189,7 +248,7 @@ def chat():
     KNOWLEDGE SNIPPETS:
     {context}
     """
-    
+
     print("Generating response...")
     try:
         completion = groq_client.chat.completions.create(
@@ -202,9 +261,9 @@ def chat():
         )
         bot_response = clean_bot_response(completion.choices[0].message.content)
         print("Response generated successfully")
-        
+
         return jsonify({"response": bot_response})
-        
+
     except Exception as e:
         print(f"Groq generation error: {e}")
         return jsonify({"response": "Вибачте, сталася помилка при генерації відповіді."}), 500
@@ -214,7 +273,7 @@ def chat():
 def upload_file():
     if 'file' not in request.files:
         return jsonify({"error": "Файл не знайдено у запиті"}), 400
-    
+
     file = request.files['file']
     if file.filename == '':
         return jsonify({"error": "Файл не вибрано"}), 400
@@ -226,8 +285,9 @@ def upload_file():
         if not pdf_bytes:
             return jsonify({"error": "Файл порожній або не вдалося прочитати вміст."}), 400
 
-        text_content = extract_pdf_text_with_ocr(pdf_bytes)
+        text_content, used_ocr = extract_pdf_text_hybrid(pdf_bytes)
         chunks = split_text_with_overlap(text_content)
+        chunks = [c for c in chunks if len(c) >= 60 and alpha_ratio(c) >= 0.35]
 
         if not chunks:
             return jsonify({"error": "Не вдалося витягнути текст із PDF. Спробуйте інший файл або перевірте OCR налаштування."}), 400
@@ -237,7 +297,6 @@ def upload_file():
         upload_stamp = int(time.time())
         for i, chunk in enumerate(chunks):
             embed = ollama.embeddings(model="nomic-embed-text", prompt=chunk)['embedding']
-
             chunk_id = f"{file.filename}_{upload_stamp}_chunk_{i}"
 
             collection.upsert(
@@ -247,7 +306,7 @@ def upload_file():
                 metadatas=[{
                     "source_file": file.filename,
                     "chunk_index": i,
-                    "ocr_used": True,
+                    "ocr_used": used_ocr,
                     "upload_stamp": upload_stamp,
                 }],
             )
