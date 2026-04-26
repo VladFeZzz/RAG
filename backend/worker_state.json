@@ -1,0 +1,29 @@
+{
+  "ran_at": "2026-04-26T15:11:53.740452+00:00",
+  "processed_artists": 0,
+  "total_artists": 5,
+  "total_chunks_upserted": 0,
+  "failed": [
+    {
+      "artist": "Metallica",
+      "reason": "HTTPSConnectionPool(host='musicbrainz.org', port=443): Max retries exceeded with url: /ws/2/recording?artist=65f4f0c5-ef9e-490c-aee3-909e7ae6b2ab&fmt=json&limit=10 (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1028)')))"
+    },
+    {
+      "artist": "Slayer",
+      "reason": "HTTPSConnectionPool(host='musicbrainz.org', port=443): Max retries exceeded with url: /ws/2/artist?query=artist%3A%22Slayer%22&fmt=json&limit=1 (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1028)')))"
+    },
+    {
+      "artist": "Megadeth",
+      "reason": "HTTPSConnectionPool(host='musicbrainz.org', port=443): Max retries exceeded with url: /ws/2/artist?query=artist%3A%22Megadeth%22&fmt=json&limit=1 (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1028)')))"
+    },
+    {
+      "artist": "Anthrax",
+      "reason": "HTTPSConnectionPool(host='musicbrainz.org', port=443): Max retries exceeded with url: /ws/2/artist?query=artist%3A%22Anthrax%22&fmt=json&limit=1 (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1028)')))"
+    },
+    {
+      "artist": "Iron Maiden",
+      "reason": "HTTPSConnectionPool(host='musicbrainz.org', port=443): Max retries exceeded with url: /ws/2/artist?query=artist%3A%22Iron+Maiden%22&fmt=json&limit=1 (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1028)')))"
+    }
+  ],
+  "smoke_ok": false
+}

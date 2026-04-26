@@ -18,12 +18,15 @@ OCR_MIN_NATIVE_TEXT_CHARS = 800
 OCR_MIN_ALPHA_RATIO = 0.45
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))
 FRONTEND_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "frontend"))
+DB_PATH = os.path.join(BASE_DIR, "my_base")
+ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
 
 app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path="")
 CORS(app)
 
-load_dotenv(dotenv_path="../.env")
+load_dotenv(dotenv_path=ENV_PATH)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
@@ -34,7 +37,7 @@ else:
     print("Groq API key loaded successfully")
 
 groq_client = Groq(api_key=GROQ_API_KEY)
-chroma_client = chromadb.PersistentClient(path="./my_base")
+chroma_client = chromadb.PersistentClient(path=DB_PATH)
 collection = chroma_client.get_or_create_collection(name="Curse_docs")
 
 
