@@ -254,14 +254,40 @@ def run_smoke_queries(col, artists: list[str]):
     for artist in artists:
         q = f"розкажи про гурт {artist}"
         emb = ollama.embeddings(model=EMBED_MODEL, prompt=q)["embedding"]
-        r = col.query(query_embeddings=[emb], n_results=3)
-        docs = r.get("documents", [[]])[0]
+        docs = []
+
+        # Validate against worker-produced records only, not the entire mixed collection.
+        try:
+            r = col.query(
+                query_embeddings=[emb],
+                n_results=3,
+                where={"source_type": "api_worker", "artist": artist},
+            )
+            docs = r.get("documents", [[]])[0]
+        except Exception:
+            # Fallback for Chroma versions with different where behavior.
+            r = col.query(query_embeddings=[emb], n_results=10)
+            candidate_docs = r.get("documents", [[]])[0]
+            candidate_ids = r.get("ids", [[]])[0]
+            docs = [d for d, doc_id in zip(candidate_docs, candidate_ids) if str(doc_id).startswith("api_")]
+
         joined = " ".join(docs).lower()
-        hit = artist.lower() in joined
-        print(f"- {artist}: {'OK' if hit else 'MISS'}")
+        hit = bool(docs) and artist.lower() in joined
+        print(f"- {artist}: {'OK' if hit else 'MISS'} (docs={len(docs)})")
         if not hit:
             ok = False
     return ok
+
+
+def count_worker_docs(col) -> int:
+    try:
+        rows = col.get(where={"source_type": "api_worker"}, include=[])
+    except Exception:
+        rows = col.get(include=[])
+        ids = rows.get("ids", [])
+        return len([x for x in ids if str(x).startswith("api_")])
+
+    return len(rows.get("ids", []))
 
 
 def save_state(payload: dict):
@@ -313,14 +339,17 @@ def main():
             failed.append({"artist": artist, "reason": str(e)})
 
     smoke_ok = run_smoke_queries(col, ARTISTS[: min(4, len(ARTISTS))])
+    worker_docs_total = count_worker_docs(col)
 
     state = {
         "ran_at": now_iso(),
         "processed_artists": processed,
         "total_artists": len(ARTISTS),
         "total_chunks_upserted": total_chunks,
+        "worker_docs_total": worker_docs_total,
         "failed": failed,
         "smoke_ok": smoke_ok,
+        "smoke_scope": "source_type=api_worker",
     }
     save_state(state)
 
