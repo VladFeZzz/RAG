@@ -1,0 +1,269 @@
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700&family=Space+Grotesk:wght@500;700&display=swap");
+
+:root {
+  --paper: #f9f6f1;
+  --ink: #221f1a;
+  --ink-soft: #61584f;
+  --panel: #fffdf9;
+  --stroke: #e7dfd3;
+  --accent: #ff6a3d;
+  --accent-strong: #d84b20;
+  --brand: #1565c0;
+  --brand-strong: #0f4a8b;
+  --bot: #e7edf5;
+  --shadow: 0 18px 40px rgba(38, 23, 14, 0.16);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--ink);
+  font-family: "Manrope", sans-serif;
+  background:
+    radial-gradient(
+      circle at 8% 15%,
+      rgba(255, 129, 85, 0.26),
+      transparent 32%
+    ),
+    radial-gradient(
+      circle at 90% 78%,
+      rgba(21, 101, 192, 0.25),
+      transparent 36%
+    ),
+    linear-gradient(135deg, #f3eee6 0%, #ece5d8 100%);
+}
+
+#root {
+  min-height: 100vh;
+  padding: 20px;
+  display: grid;
+  place-items: center;
+}
+
+.app-shell {
+  width: min(960px, 100%);
+  height: min(92vh, 960px);
+  border: 1px solid var(--stroke);
+  border-radius: 24px;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.app-header {
+  padding: 22px 26px;
+  color: #fff;
+  background: linear-gradient(98deg, #111 0%, #2b2722 55%, #4a3b2e 100%);
+}
+
+.app-header h1 {
+  margin: 0;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: clamp(1.35rem, 2.2vw, 1.95rem);
+  letter-spacing: 0.02em;
+}
+
+.app-header p {
+  margin: 6px 0 0;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 0.96rem;
+}
+
+.upload-panel {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--stroke);
+  background: linear-gradient(180deg, #fdf9f3 0%, #fbf5eb 100%);
+}
+
+.upload-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.upload-label {
+  font-weight: 700;
+  color: var(--brand);
+}
+
+.upload-row input[type="file"] {
+  border: 1px dashed var(--stroke);
+  border-radius: 8px;
+  padding: 8px;
+  background: #fff;
+}
+
+.file-name {
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+}
+
+.upload-button {
+  margin-left: auto;
+  border: 0;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition:
+    transform 140ms ease,
+    background-color 140ms ease;
+}
+
+.upload-button:hover:not(:disabled) {
+  background: var(--accent-strong);
+  transform: translateY(-1px);
+}
+
+.upload-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.upload-status {
+  margin: 10px 0 0;
+  min-height: 20px;
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.upload-idle {
+  color: var(--ink-soft);
+}
+
+.upload-progress {
+  color: var(--brand);
+}
+
+.upload-success {
+  color: #127a30;
+}
+
+.upload-error {
+  color: #b42318;
+}
+
+.chat-window {
+  overflow-y: auto;
+  padding: 18px 18px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.message {
+  display: flex;
+}
+
+.message-user {
+  justify-content: flex-end;
+}
+
+.message-bot {
+  justify-content: flex-start;
+}
+
+.bubble {
+  max-width: 76%;
+  border-radius: 18px;
+  padding: 12px 14px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.message-user .bubble {
+  color: #fff;
+  border-bottom-right-radius: 6px;
+  background: linear-gradient(
+    135deg,
+    var(--brand) 0%,
+    var(--brand-strong) 100%
+  );
+}
+
+.message-bot .bubble {
+  color: #132030;
+  border-bottom-left-radius: 6px;
+  background: var(--bot);
+}
+
+.bubble.pending {
+  opacity: 0.72;
+  font-style: italic;
+}
+
+.composer {
+  gap: 10px;
+  padding: 16px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  border-top: 1px solid var(--stroke);
+  background: #fff;
+}
+
+.composer-input {
+  width: 100%;
+  border: 1px solid #d7d0c6;
+  border-radius: 999px;
+  background: #fff;
+  padding: 13px 16px;
+  color: var(--ink);
+  font-size: 1rem;
+}
+
+.composer-input:focus {
+  outline: 2px solid rgba(21, 101, 192, 0.2);
+  border-color: var(--brand);
+}
+
+.composer-button {
+  border: 0;
+  border-radius: 999px;
+  color: #fff;
+  font-weight: 700;
+  background: var(--brand);
+  padding: 0 22px;
+  cursor: pointer;
+}
+
+.composer-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+@media (max-width: 768px) {
+  #root {
+    padding: 8px;
+  }
+
+  .app-shell {
+    height: 96vh;
+    border-radius: 16px;
+  }
+
+  .bubble {
+    max-width: 90%;
+  }
+
+  .upload-button {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .composer {
+    grid-template-columns: 1fr;
+  }
+
+  .composer-button {
+    height: 46px;
+  }
+}
