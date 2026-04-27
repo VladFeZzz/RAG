@@ -10,7 +10,7 @@ from groq import Groq
 from dotenv import load_dotenv
 import pypdf
 
-RELEVANCE_DISTANCE_THRESHOLD = 200.0
+RELEVANCE_DISTANCE_THRESHOLD = 420.0
 MAX_CHUNK_CHARS = 1400
 CHUNK_OVERLAP_CHARS = 200
 N_RESULTS = 8
@@ -18,12 +18,18 @@ OCR_MIN_NATIVE_TEXT_CHARS = 800
 OCR_MIN_ALPHA_RATIO = 0.45
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))
 FRONTEND_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "frontend"))
+DB_PATH = os.path.join(BASE_DIR, "my_base")
+ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
 
 app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path="")
 CORS(app)
 
-load_dotenv(dotenv_path="../.env")
+load_dotenv(dotenv_path=ENV_PATH)
+
+ARTISTS_RAW = os.getenv("WORKER_ARTISTS", "Metallica,Slayer,Megadeth,Anthrax,Iron Maiden")
+KNOWN_ARTISTS = [x.strip() for x in ARTISTS_RAW.split(",") if x.strip()]
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
@@ -34,7 +40,7 @@ else:
     print("Groq API key loaded successfully")
 
 groq_client = Groq(api_key=GROQ_API_KEY)
-chroma_client = chromadb.PersistentClient(path="./my_base")
+chroma_client = chromadb.PersistentClient(path=DB_PATH)
 collection = chroma_client.get_or_create_collection(name="Curse_docs")
 
 
@@ -163,6 +169,57 @@ def has_keyword_overlap(question: str, context: str) -> bool:
     return any(token in context_lower for token in tokens)
 
 
+def extract_target_artist(question: str) -> str | None:
+    q = (question or "").lower()
+    for artist in KNOWN_ARTISTS:
+        if artist.lower() in q:
+            return artist
+    return None
+
+
+def build_artist_response_from_context(target_artist: str, context: str) -> str:
+    if not target_artist or not context:
+        return ""
+
+    lines = [ln.strip() for ln in (context or "").splitlines() if ln.strip()]
+    artist_lines = [ln for ln in lines if target_artist.lower() in ln.lower()]
+
+    mbid_match = re.search(r"MusicBrainz ID:\s*([\w-]+)", context, flags=re.IGNORECASE)
+    country_match = re.search(r"Країна:\s*([^\n]+)", context, flags=re.IGNORECASE)
+    tags_mb_match = re.search(r"Теги \(MusicBrainz\):\s*([^\n]+)", context, flags=re.IGNORECASE)
+    tracks_lf_match = re.search(r"Топ треки \(Last\.fm\):\s*([^\n]+)", context, flags=re.IGNORECASE)
+    bio_match = re.search(r"Коротка історія/біографія:\s*([^\n]+)", context, flags=re.IGNORECASE)
+
+    has_artist_context = bool(artist_lines) or bool(mbid_match)
+    if not has_artist_context:
+        return ""
+
+    parts = [f"Ось що знайшов про {target_artist} у твоїй базі:"]
+
+    def short(text: str, limit: int = 260) -> str:
+        t = re.sub(r"\s+", " ", (text or "")).strip()
+        return t if len(t) <= limit else (t[: limit - 3].rstrip() + "...")
+
+    if mbid_match:
+        parts.append(f"MusicBrainz ID: {mbid_match.group(1)}.")
+    if country_match:
+        parts.append(f"Країна: {short(country_match.group(1))}.")
+    if tags_mb_match:
+        tags = short(tags_mb_match.group(1))
+        parts.append(f"Жанрові/стильові теги: {tags}.")
+    if tracks_lf_match:
+        tracks = short(tracks_lf_match.group(1), limit=320)
+        parts.append(f"Популярні треки (Last.fm): {tracks}.")
+    if bio_match:
+        bio = short(bio_match.group(1), limit=420)
+        parts.append(f"Коротка історія: {bio}")
+
+    if len(parts) == 1:
+        parts.append("Є релевантні записи, але без деталізованих полів. Запусти воркер ще раз для оновлення біографії та статистики.")
+
+    return "\n".join(parts)
+
+
 def rerank_by_keyword_overlap(question: str, docs: list[str], distances: list[float]):
     q_tokens = [t.strip(".,!?()[]{}:;\"'`").lower() for t in question.split()]
     q_tokens = [t for t in q_tokens if len(t) >= 3]
@@ -204,7 +261,60 @@ def chat():
         if results['documents'] and results['documents'][0]:
             raw_docs = [doc for doc in results['documents'][0] if doc]
             raw_dists = results.get('distances', [[]])[0] if results.get('distances') else []
+
+            target_artist = extract_target_artist(user_question)
+            if target_artist:
+                try:
+                    artist_results = collection.query(
+                        query_embeddings=[query_embed],
+                        n_results=max(N_RESULTS, 8),
+                        where={
+                            "$and": [
+                                {"source_type": "api_worker"},
+                                {"artist": target_artist},
+                            ]
+                        },
+                    )
+                    artist_docs = artist_results.get('documents', [[]])[0] if artist_results.get('documents') else []
+                    artist_dists = artist_results.get('distances', [[]])[0] if artist_results.get('distances') else []
+
+                    # Prefer exact artist worker docs by prepending them before global matches.
+                    merged_docs = []
+                    merged_dists = []
+                    for doc, dist in zip(artist_docs, artist_dists):
+                        if doc:
+                            merged_docs.append(doc)
+                            merged_dists.append(dist)
+                    for idx, doc in enumerate(raw_docs):
+                        if doc and doc not in merged_docs:
+                            merged_docs.append(doc)
+                            merged_dists.append(raw_dists[idx] if idx < len(raw_dists) else 10**9)
+
+                    raw_docs = merged_docs
+                    raw_dists = merged_dists
+                except Exception as e:
+                    print(f"Artist-filter query warning: {e}")
+
             top_docs, top_dists = rerank_by_keyword_overlap(user_question, raw_docs, raw_dists)
+
+            if target_artist:
+                artist_docs = []
+                artist_dists = []
+                other_docs = []
+                other_dists = []
+
+                for idx, doc in enumerate(top_docs):
+                    dist = top_dists[idx] if idx < len(top_dists) else 10**9
+                    if target_artist.lower() in (doc or "").lower():
+                        artist_docs.append(doc)
+                        artist_dists.append(dist)
+                    else:
+                        other_docs.append(doc)
+                        other_dists.append(dist)
+
+                if artist_docs:
+                    top_docs = artist_docs + other_docs
+                    top_dists = artist_dists + other_dists
 
             top_docs = top_docs[:3]
             top_dists = top_dists[:3] if top_dists else []
@@ -224,11 +334,18 @@ def chat():
         context = ""
         best_distance = None
 
+    target_artist = extract_target_artist(user_question)
+    artist_match_in_context = bool(target_artist and target_artist.lower() in context.lower())
     weak_retrieval = best_distance is not None and best_distance > RELEVANCE_DISTANCE_THRESHOLD
-    if not context or (weak_retrieval and not has_keyword_overlap(user_question, context)):
+    if not context or (weak_retrieval and not has_keyword_overlap(user_question, context) and not artist_match_in_context):
         return jsonify({
             "response": "Не знайшов достатньо релевантної інформації у базі знань для цього питання. Спробуй перефразувати запит або додати PDF з потрібною темою."
         })
+
+    if target_artist and artist_match_in_context:
+        direct_artist_answer = build_artist_response_from_context(target_artist, context)
+        if direct_artist_answer:
+            return jsonify({"response": direct_artist_answer})
 
     rag_hint = ""
     if "rag" in user_question.lower():
