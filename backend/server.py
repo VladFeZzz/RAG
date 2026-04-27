@@ -181,43 +181,44 @@ def build_artist_response_from_context(target_artist: str, context: str) -> str:
     if not target_artist or not context:
         return ""
 
-    lines = [ln.strip() for ln in (context or "").splitlines() if ln.strip()]
-    artist_lines = [ln for ln in lines if target_artist.lower() in ln.lower()]
+    question_lower = ""
+    if isinstance(context, dict):
+        question_lower = str(context.get("question", "")).lower()
+        context = str(context.get("context", ""))
 
-    mbid_match = re.search(r"MusicBrainz ID:\s*([\w-]+)", context, flags=re.IGNORECASE)
-    country_match = re.search(r"Країна:\s*([^\n]+)", context, flags=re.IGNORECASE)
-    tags_mb_match = re.search(r"Теги \(MusicBrainz\):\s*([^\n]+)", context, flags=re.IGNORECASE)
-    tracks_lf_match = re.search(r"Топ треки \(Last\.fm\):\s*([^\n]+)", context, flags=re.IGNORECASE)
-    bio_match = re.search(r"Коротка історія/біографія:\s*([^\n]+)", context, flags=re.IGNORECASE)
+    metadata_request = any(
+        token in question_lower
+        for token in ["musicbrainz", "країн", "country", "тег", "tag", "треки", "track", "playcount", "listeners", "id"]
+    )
 
-    has_artist_context = bool(artist_lines) or bool(mbid_match)
-    if not has_artist_context:
+    system_prompt = f"""
+You are a music historian and editor.
+Write in Ukrainian only.
+Use only the provided context about {target_artist}.
+Do not output raw field labels like MusicBrainz ID, Теги, or Топ треки as a list.
+Give a short, natural answer in 4 to 6 sentences.
+For a general question, focus on the artist's history, origin, style, influence, and notable songs.
+If the user explicitly asks for metadata, include only the relevant facts briefly and naturally.
+Translate any English facts from the context into fluent Ukrainian.
+Keep the answer concise and avoid repeating the same fact twice.
+""".strip()
+
+    user_prompt = f"Питання: {question_lower or target_artist}\n\nКонтекст:\n{context}\n\nСформулюй відповідь."
+
+    try:
+        completion = groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            model="llama-3.3-70b-versatile",
+            temperature=0.3 if metadata_request else 0.4,
+        )
+        answer = clean_bot_response(completion.choices[0].message.content)
+        return answer
+    except Exception as e:
+        print(f"Artist summary generation warning: {e}")
         return ""
-
-    parts = [f"Ось що знайшов про {target_artist} у твоїй базі:"]
-
-    def short(text: str, limit: int = 260) -> str:
-        t = re.sub(r"\s+", " ", (text or "")).strip()
-        return t if len(t) <= limit else (t[: limit - 3].rstrip() + "...")
-
-    if mbid_match:
-        parts.append(f"MusicBrainz ID: {mbid_match.group(1)}.")
-    if country_match:
-        parts.append(f"Країна: {short(country_match.group(1))}.")
-    if tags_mb_match:
-        tags = short(tags_mb_match.group(1))
-        parts.append(f"Жанрові/стильові теги: {tags}.")
-    if tracks_lf_match:
-        tracks = short(tracks_lf_match.group(1), limit=320)
-        parts.append(f"Популярні треки (Last.fm): {tracks}.")
-    if bio_match:
-        bio = short(bio_match.group(1), limit=420)
-        parts.append(f"Коротка історія: {bio}")
-
-    if len(parts) == 1:
-        parts.append("Є релевантні записи, але без деталізованих полів. Запусти воркер ще раз для оновлення біографії та статистики.")
-
-    return "\n".join(parts)
 
 
 def rerank_by_keyword_overlap(question: str, docs: list[str], distances: list[float]):
@@ -316,6 +317,11 @@ def chat():
                     top_docs = artist_docs + other_docs
                     top_dists = artist_dists + other_dists
 
+            if target_artist:
+                artist_only_docs = [doc for doc in top_docs if target_artist.lower() in (doc or "").lower()]
+                if artist_only_docs:
+                    top_docs = artist_only_docs
+
             top_docs = top_docs[:3]
             top_dists = top_dists[:3] if top_dists else []
 
@@ -343,7 +349,13 @@ def chat():
         })
 
     if target_artist and artist_match_in_context:
-        direct_artist_answer = build_artist_response_from_context(target_artist, context)
+        direct_artist_answer = build_artist_response_from_context(
+            target_artist,
+            {
+                "question": user_question,
+                "context": context,
+            },
+        )
         if direct_artist_answer:
             return jsonify({"response": direct_artist_answer})
 
