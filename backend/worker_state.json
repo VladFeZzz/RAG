@@ -1,10 +1,19 @@
 {
-  "ran_at": "2026-04-27T09:47:41.945891+00:00",
+  "ran_at": "2026-04-27T20:59:00.492977+00:00",
   "processed_artists": 5,
-  "total_artists": 5,
+  "batch": [
+    "Pearl Jam",
+    "Foo Fighters",
+    "Queen",
+    "The Rolling Stones",
+    "The Beatles"
+  ],
+  "batch_size": 5,
+  "batch_offset": 15,
+  "total_artists": 146,
   "total_chunks_upserted": 15,
-  "worker_docs_total": 22,
+  "worker_docs_total": 79,
   "failed": [],
-  "smoke_ok": false,
+  "smoke_ok": true,
   "smoke_scope": "source_type=api_worker"
 }

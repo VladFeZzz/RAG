@@ -32,9 +32,26 @@ MB_RETRIES = 3
 # Optional API key (worker still runs with MusicBrainz only)
 LASTFM_API_KEY = os.getenv("LASTFM_API_KEY", "").strip()
 
-# Comma separated list in .env, fallback defaults
-ARTISTS_RAW = os.getenv("WORKER_ARTISTS", "Metallica,Slayer,Megadeth,Anthrax")
-ARTISTS = [x.strip() for x in ARTISTS_RAW.split(",") if x.strip()]
+# Prefer artists.txt when present; otherwise use WORKER_ARTISTS env var
+ARTISTS_FILE = os.path.join(BASE_DIR, "artists.txt")
+ARTISTS_RAW = os.getenv("WORKER_ARTISTS", "")
+if os.path.exists(ARTISTS_FILE):
+    with open(ARTISTS_FILE, "r", encoding="utf-8") as f:
+        data = f.read().strip()
+    if data:
+        ARTISTS = [x.strip() for x in re.split(r"[\n,]+", data) if x.strip()]
+    elif ARTISTS_RAW.strip():
+        ARTISTS = [x.strip() for x in ARTISTS_RAW.split(",") if x.strip()]
+    else:
+        ARTISTS = ["Metallica", "Slayer", "Megadeth", "Anthrax"]
+else:
+    if ARTISTS_RAW.strip():
+        ARTISTS = [x.strip() for x in ARTISTS_RAW.split(",") if x.strip()]
+    else:
+        ARTISTS = ["Metallica", "Slayer", "Megadeth", "Anthrax"]
+
+# Worker batching: how many artists to process per run and rotation state
+WORKER_BATCH_SIZE = int(os.getenv("WORKER_BATCH_SIZE", "5"))
 
 # Keep chunks compact for embeddings
 MAX_CHARS = 1200
@@ -376,6 +393,16 @@ def save_state(payload: dict):
         print("State save warning:", e)
 
 
+def load_state() -> dict:
+    try:
+        if os.path.exists(STATE_PATH):
+            with open(STATE_PATH, "r", encoding="utf-8") as f:
+                return json.load(f) or {}
+    except Exception as e:
+        print("State load warning:", e)
+    return {}
+
+
 def main():
     client = chromadb.PersistentClient(path=DB_PATH)
     col = client.get_or_create_collection(name=COLLECTION_NAME)
@@ -384,11 +411,28 @@ def main():
     processed = 0
     failed = []
 
+    # Load state to determine next batch offset
+    state_prev = load_state()
+    offset = int(state_prev.get("batch_offset", 0) or 0)
+
+    # Prepare artists batch (wrap-around)
+    total_artists = len(ARTISTS)
+    if total_artists == 0:
+        print("No artists configured. Set WORKER_ARTISTS in .env")
+        return
+
+    batch = []
+    take = min(WORKER_BATCH_SIZE, total_artists)
+    for i in range(take):
+        idx = (offset + i) % total_artists
+        batch.append(ARTISTS[idx])
+
     print("Worker start:", now_iso())
-    print("Artists:", ARTISTS)
+    print(f"Artists total: {total_artists}, processing batch size: {take}, offset: {offset}")
+    print("Batch:", batch)
     print("Last.fm key present:", bool(LASTFM_API_KEY))
 
-    for artist in ARTISTS:
+    for artist in batch:
         try:
             mb_artist = fetch_musicbrainz_artist(artist)
             lastfm_tracks = fetch_lastfm_toptracks(artist, limit=10)
@@ -417,12 +461,19 @@ def main():
             print(f"[ERR] {artist}: {e}")
             failed.append({"artist": artist, "reason": str(e)})
 
-    smoke_ok = run_smoke_queries(col, ARTISTS[: min(4, len(ARTISTS))])
+    # Run smoke queries against the current batch (limit checks to batch or first 4)
+    smoke_scope_artists = batch[: min(4, len(batch))]
+    smoke_ok = run_smoke_queries(col, smoke_scope_artists)
     worker_docs_total = count_worker_docs(col)
+    # Compute next offset and persist in state
+    next_offset = (offset + take) % len(ARTISTS)
 
     state = {
         "ran_at": now_iso(),
         "processed_artists": processed,
+        "batch": batch,
+        "batch_size": take,
+        "batch_offset": next_offset,
         "total_artists": len(ARTISTS),
         "total_chunks_upserted": total_chunks,
         "worker_docs_total": worker_docs_total,
