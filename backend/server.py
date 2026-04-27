@@ -28,8 +28,22 @@ CORS(app)
 
 load_dotenv(dotenv_path=ENV_PATH)
 
-ARTISTS_RAW = os.getenv("WORKER_ARTISTS", "Metallica,Slayer,Megadeth,Anthrax,Iron Maiden")
-KNOWN_ARTISTS = [x.strip() for x in ARTISTS_RAW.split(",") if x.strip()]
+ARTISTS_FILE = os.path.join(BASE_DIR, "artists.txt")
+ARTISTS_RAW = os.getenv("WORKER_ARTISTS", "")
+if os.path.exists(ARTISTS_FILE):
+    with open(ARTISTS_FILE, "r", encoding="utf-8") as f:
+        data = f.read().strip()
+    if data:
+        KNOWN_ARTISTS = [x.strip() for x in re.split(r"[\n,]+", data) if x.strip()]
+    elif ARTISTS_RAW.strip():
+        KNOWN_ARTISTS = [x.strip() for x in ARTISTS_RAW.split(",") if x.strip()]
+    else:
+        KNOWN_ARTISTS = ["Metallica", "Slayer", "Megadeth", "Anthrax", "Iron Maiden"]
+else:
+    if ARTISTS_RAW.strip():
+        KNOWN_ARTISTS = [x.strip() for x in ARTISTS_RAW.split(",") if x.strip()]
+    else:
+        KNOWN_ARTISTS = ["Metallica", "Slayer", "Megadeth", "Anthrax", "Iron Maiden"]
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
