@@ -1,10 +1,10 @@
 {
-  "ran_at": "2026-04-26T15:26:00.643607+00:00",
+  "ran_at": "2026-04-27T09:47:41.945891+00:00",
   "processed_artists": 5,
   "total_artists": 5,
-  "total_chunks_upserted": 5,
-  "worker_docs_total": 6,
+  "total_chunks_upserted": 15,
+  "worker_docs_total": 22,
   "failed": [],
-  "smoke_ok": true,
+  "smoke_ok": false,
   "smoke_scope": "source_type=api_worker"
 }

@@ -150,11 +150,61 @@ def fetch_lastfm_toptracks(artist_name: str, limit: int = 8):
     return tracks or []
 
 
-def build_artist_doc(artist_name: str, mb_artist: dict, recordings: list, lastfm_tracks: list):
+def fetch_lastfm_artist_info(artist_name: str):
+    if not LASTFM_API_KEY:
+        return {}
+
+    params = {
+        "method": "artist.getinfo",
+        "artist": artist_name,
+        "api_key": LASTFM_API_KEY,
+        "format": "json",
+        "autocorrect": "1",
+    }
+    try:
+        r = requests.get(LASTFM_BASE, params=params, timeout=REQUEST_TIMEOUT)
+        r.raise_for_status()
+        artist = r.json().get("artist", {}) or {}
+    except Exception as e:
+        print(f"[WARN] Last.fm artist info fetch failed for {artist_name}: {e}")
+        return {}
+
+    tags = artist.get("tags", {}).get("tag", [])
+    if isinstance(tags, dict):
+        tags = [tags]
+    tag_names = [t.get("name") for t in tags if isinstance(t, dict) and t.get("name")][:10]
+
+    bio = artist.get("bio", {}) or {}
+    summary = (bio.get("summary") or "").strip()
+    content = (bio.get("content") or "").strip()
+    summary = re.sub(r"<[^>]+>", "", summary)
+    content = re.sub(r"<[^>]+>", "", content)
+
+    return {
+        "name": artist.get("name", ""),
+        "listeners": artist.get("stats", {}).get("listeners"),
+        "playcount": artist.get("stats", {}).get("playcount"),
+        "tags": tag_names,
+        "bio_summary": summary,
+        "bio_content": content,
+    }
+
+
+def build_artist_doc(
+    artist_name: str,
+    mb_artist: dict,
+    recordings: list,
+    lastfm_tracks: list,
+    lastfm_artist_info: dict,
+):
     mbid = mb_artist.get("id", "")
     country = mb_artist.get("country", "невідомо")
     disambiguation = mb_artist.get("disambiguation", "")
     tags = [t.get("name") for t in mb_artist.get("tags", []) if t.get("name")][:8]
+    life_span = mb_artist.get("life-span", {}) or {}
+    begin_date = life_span.get("begin")
+    end_date = life_span.get("end")
+    begin_area = (mb_artist.get("begin-area") or {}).get("name")
 
     rec_titles = [r.get("title") for r in recordings if r.get("title")][:12]
 
@@ -174,6 +224,13 @@ def build_artist_doc(artist_name: str, mb_artist: dict, recordings: list, lastfm
         f"Країна: {country}",
     ]
 
+    if begin_area:
+        text_parts.append(f"Місце заснування: {begin_area}")
+    if begin_date:
+        text_parts.append(f"Початок активності: {begin_date}")
+    if end_date:
+        text_parts.append(f"Кінець активності: {end_date}")
+
     if disambiguation:
         text_parts.append(f"Опис/уточнення: {disambiguation}")
 
@@ -185,6 +242,22 @@ def build_artist_doc(artist_name: str, mb_artist: dict, recordings: list, lastfm
 
     if lastfm_titles:
         text_parts.append("Топ треки (Last.fm): " + ", ".join(lastfm_titles))
+
+    lf_tags = lastfm_artist_info.get("tags") or []
+    if lf_tags:
+        text_parts.append("Теги (Last.fm): " + ", ".join(lf_tags))
+
+    listeners = lastfm_artist_info.get("listeners")
+    playcount = lastfm_artist_info.get("playcount")
+    if listeners or playcount:
+        text_parts.append(
+            f"Статистика Last.fm: listeners={listeners or 'n/a'}, playcount={playcount or 'n/a'}"
+        )
+
+    bio = (lastfm_artist_info.get("bio_content") or lastfm_artist_info.get("bio_summary") or "").strip()
+    if bio:
+        # Keep biography concise to avoid noisy giant chunks.
+        text_parts.append("Коротка історія/біографія: " + bio[:1800])
 
     text_parts.append(
         "Джерела: MusicBrainz API, Last.fm API. Цей запис автоматично зібраний воркером."
@@ -261,7 +334,12 @@ def run_smoke_queries(col, artists: list[str]):
             r = col.query(
                 query_embeddings=[emb],
                 n_results=3,
-                where={"source_type": "api_worker", "artist": artist},
+                where={
+                    "$and": [
+                        {"source_type": "api_worker"},
+                        {"artist": artist},
+                    ]
+                },
             )
             docs = r.get("documents", [[]])[0]
         except Exception:
@@ -314,11 +392,12 @@ def main():
         try:
             mb_artist = fetch_musicbrainz_artist(artist)
             lastfm_tracks = fetch_lastfm_toptracks(artist, limit=10)
+            lastfm_artist_info = fetch_lastfm_artist_info(artist)
 
             if mb_artist:
                 mbid = mb_artist.get("id", "")
                 recordings = fetch_musicbrainz_recordings(mbid, limit=10) if mbid else []
-                doc = build_artist_doc(artist, mb_artist, recordings, lastfm_tracks)
+                doc = build_artist_doc(artist, mb_artist, recordings, lastfm_tracks, lastfm_artist_info)
                 source_key = "mb_lastfm"
             else:
                 if not lastfm_tracks:
