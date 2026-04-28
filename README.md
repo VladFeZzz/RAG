@@ -174,5 +174,5 @@ py db_admin.py quality --artist Queen
 
 ## Автор
 
-Ковальчук Владислав
+Ковальчук Владислав,
 Навчальний/курсовий проєкт з фокусом на AI engineering, RAG та applied ML tooling.
