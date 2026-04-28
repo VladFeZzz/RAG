@@ -28,9 +28,7 @@ function App() {
   });
 
   const subtitle = useMemo(() => {
-    return busy
-      ? "Бот формує відповідь..."
-      : "Music RAG Assistant (React Edition)";
+    return busy ? "Бот формує відповідь..." : "Music RAG Assistant";
   }, [busy]);
 
   async function handleSend(message: string) {
@@ -78,19 +76,19 @@ function App() {
   async function handleUpload(file: File) {
     setUploadStatus({
       type: "progress",
-      text: "Обробляю файл... Це може зайняти хвилину.",
+      text: `Завантажую ${file.name} та індексую в базу...`,
     });
     setBusy(true);
 
     try {
       const result = await uploadPdf(file);
-      setUploadStatus({ type: "success", text: `Success: ${result}` });
+      setUploadStatus({ type: "success", text: `Готово: ${result}` });
     } catch (error) {
       const errorText =
         error instanceof Error
           ? error.message
           : "Невідома помилка при завантаженні.";
-      setUploadStatus({ type: "error", text: `Error: ${errorText}` });
+      setUploadStatus({ type: "error", text: `Помилка: ${errorText}` });
     } finally {
       setBusy(false);
     }
