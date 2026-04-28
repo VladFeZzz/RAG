@@ -12,3 +12,7 @@ __pycache__/
 
 Thumbs.db
 .DS_Store
+
+frontend-react/node_modules/
+frontend-react/dist/
+backend/worker_state.json
