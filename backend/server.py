@@ -9,6 +9,7 @@ import ollama
 from groq import Groq
 from dotenv import load_dotenv
 import pypdf
+from werkzeug.exceptions import RequestEntityTooLarge
 
 RELEVANCE_DISTANCE_THRESHOLD = 420.0
 MAX_CHUNK_CHARS = 1400
@@ -27,6 +28,10 @@ app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path="")
 CORS(app)
 
 load_dotenv(dotenv_path=ENV_PATH)
+
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "45"))
+MAX_UPLOAD_PAGES = int(os.getenv("MAX_UPLOAD_PAGES", "350"))
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 
 ARTISTS_FILE = os.path.join(BASE_DIR, "artists.txt")
 ARTISTS_RAW = os.getenv("WORKER_ARTISTS", "")
@@ -55,7 +60,11 @@ else:
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 chroma_client = chromadb.PersistentClient(path=DB_PATH)
-collection = chroma_client.get_or_create_collection(name="Curse_docs")
+
+
+def get_collection():
+    # Re-fetch collection handle to immediately observe updates written by other processes.
+    return chroma_client.get_or_create_collection(name="Curse_docs")
 
 
 def alpha_ratio(text: str) -> float:
@@ -92,6 +101,14 @@ def split_text_with_overlap(text: str, max_chars: int = MAX_CHUNK_CHARS, overlap
         start = max(0, end - overlap)
 
     return chunks
+
+
+def get_pdf_page_count(pdf_bytes: bytes) -> int:
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+        return len(reader.pages)
+    except Exception:
+        return 0
 
 
 def extract_pdf_text_native(pdf_bytes: bytes) -> str:
@@ -258,6 +275,16 @@ def serve_frontend():
     return send_from_directory(app.static_folder, "index.html")
 
 
+@app.errorhandler(RequestEntityTooLarge)
+def handle_large_payload(_error):
+    return jsonify({
+        "error": (
+            f"Файл занадто великий. Максимальний розмір: {MAX_UPLOAD_MB} MB. "
+            "Спробуйте зменшити PDF або розбити його на кілька частин."
+        )
+    }), 413
+
+
 @app.route('/chat', methods=['POST'])
 def chat():
     data = request.json
@@ -268,6 +295,7 @@ def chat():
     print(f"\nUser question: {user_question}")
 
     try:
+        collection = get_collection()
         query_embed = ollama.embeddings(model="nomic-embed-text", prompt=user_question)['embedding']
         results = collection.query(query_embeddings=[query_embed], n_results=N_RESULTS)
 
@@ -424,9 +452,29 @@ def upload_file():
     print(f"\nProcessing file: {file.filename}")
 
     try:
+        started_at = time.time()
+        collection = get_collection()
         pdf_bytes = file.read()
         if not pdf_bytes:
             return jsonify({"error": "Файл порожній або не вдалося прочитати вміст."}), 400
+
+        file_size_mb = len(pdf_bytes) / (1024 * 1024)
+        if file_size_mb > MAX_UPLOAD_MB:
+            return jsonify({
+                "error": (
+                    f"Файл має {file_size_mb:.1f} MB, що перевищує ліміт {MAX_UPLOAD_MB} MB. "
+                    "Розбийте PDF на частини або стисніть файл."
+                )
+            }), 400
+
+        page_count = get_pdf_page_count(pdf_bytes)
+        if page_count > MAX_UPLOAD_PAGES:
+            return jsonify({
+                "error": (
+                    f"PDF має {page_count} сторінок, а ліміт становить {MAX_UPLOAD_PAGES}. "
+                    "Для стабільної роботи завантажте книгу частинами."
+                )
+            }), 400
 
         text_content, used_ocr = extract_pdf_text_hybrid(pdf_bytes)
         chunks = split_text_with_overlap(text_content)
@@ -454,8 +502,16 @@ def upload_file():
                 }],
             )
 
+        elapsed = time.time() - started_at
         print(f"File {file.filename} successfully added to knowledge base")
-        return jsonify({"status": "success", "message": "Файл успішно оброблено та збережено!"})
+        return jsonify({
+            "status": "success",
+            "message": "Файл успішно оброблено та збережено!",
+            "pages": page_count,
+            "chunks": len(chunks),
+            "ocr_used": used_ocr,
+            "processing_seconds": round(elapsed, 2),
+        })
 
     except Exception as e:
         print(f"PDF processing error: {e}")
