@@ -2,6 +2,9 @@ import io
 import os
 import re
 import time
+import threading
+import subprocess
+import sys
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import chromadb
@@ -33,6 +36,10 @@ MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "45"))
 MAX_UPLOAD_PAGES = int(os.getenv("MAX_UPLOAD_PAGES", "350"))
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 
+WORKER_AUTOSTART = os.getenv("WORKER_AUTOSTART", "false").strip().lower() in {"1", "true", "yes"}
+WORKER_INTERVAL_MIN = int(os.getenv("WORKER_INTERVAL_MIN", "60"))
+WORKER_ON_START = os.getenv("WORKER_ON_START", "true").strip().lower() in {"1", "true", "yes"}
+
 ARTISTS_FILE = os.path.join(BASE_DIR, "artists.txt")
 ARTISTS_RAW = os.getenv("WORKER_ARTISTS", "")
 if os.path.exists(ARTISTS_FILE):
@@ -61,10 +68,37 @@ else:
 groq_client = Groq(api_key=GROQ_API_KEY)
 chroma_client = chromadb.PersistentClient(path=DB_PATH)
 
+_worker_lock = threading.Lock()
+_worker_running = False
+
 
 def get_collection():
     # Re-fetch collection handle to immediately observe updates written by other processes.
     return chroma_client.get_or_create_collection(name="Curse_docs")
+
+
+def run_worker_once():
+    global _worker_running
+    if _worker_lock.locked():
+        return
+
+    with _worker_lock:
+        _worker_running = True
+        try:
+            worker_path = os.path.join(BASE_DIR, "music_worker.py")
+            subprocess.run([sys.executable, worker_path], check=False)
+        finally:
+            _worker_running = False
+
+
+def worker_loop():
+    if WORKER_ON_START:
+        run_worker_once()
+
+    interval_sec = max(10, WORKER_INTERVAL_MIN * 60)
+    while True:
+        time.sleep(interval_sec)
+        run_worker_once()
 
 
 def alpha_ratio(text: str) -> float:
@@ -521,4 +555,11 @@ def upload_file():
 if __name__ == '__main__':
     print("\nServer started at http://127.0.0.1:5000")
     print("Press CTRL+C to stop\n")
+    if WORKER_AUTOSTART:
+        thread = threading.Thread(target=worker_loop, daemon=True)
+        thread.start()
+        print(
+            f"Worker autostart enabled. Interval: {WORKER_INTERVAL_MIN} min, "
+            f"run_on_start={WORKER_ON_START}"
+        )
     app.run(debug=True, use_reloader=False, port=5000)
